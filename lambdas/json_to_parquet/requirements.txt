@@ -1,0 +1,3 @@
+# Reference-only Lambda; large — consider a Lambda container image if you hit size limits.
+awswrangler>=3.5.0,<4
+pandas>=2.0.0,<3
