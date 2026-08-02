@@ -1,3 +1,25 @@
+"""
+Lambda: YouTube Data API Ingestion (Bronze Layer)
+──────────────────────────────────────────────────
+Triggered by EventBridge on a schedule (e.g., every 6 hours).
+Pulls trending videos from the YouTube Data API for each configured region
+and writes raw JSON responses to Bronze folders in a single S3 bucket.
+
+Single-bucket layout (folders = layers):
+  s3://youtube-analytics-data-ap-south-01/bronzeLayer/youtube/raw_statistics/...
+  s3://youtube-analytics-data-ap-south-01/bronzeLayer/youtube/raw_statistics_reference_data/...
+  s3://youtube-analytics-data-ap-south-01/silverLayer/...
+  s3://youtube-analytics-data-ap-south-01/goldLayer/...
+
+Environment Variables:
+    YOUTUBE_API_KEY       — Google API key with YouTube Data API v3 enabled
+    S3_BUCKET             — default youtube-analytics-data-ap-south-01
+    BRONZE_STATS_PREFIX   — default bronzeLayer/youtube/raw_statistics
+    BRONZE_REF_PREFIX     — default bronzeLayer/youtube/raw_statistics_reference_data
+    YOUTUBE_REGIONS       — Comma-separated region codes (default: US,GB,CA,...)
+    SNS_ALERT_TOPIC_ARN   — SNS topic for failure alerts
+"""
+
 import json
 import os
 import logging
@@ -17,10 +39,15 @@ s3_client = boto3.client("s3")
 sns_client = boto3.client("sns")
 
 # ── Config ───────────────────────────────────────────────────────────────────
-# Single bucket layout: s3://<bucket>/bronzeLayer/..., silverLayer/..., goldLayer/...
+DEFAULT_BUCKET = "youtube-analytics-data-ap-south-01"
 API_KEY = os.environ["YOUTUBE_API_KEY"]
-BUCKET = os.environ["S3_BUCKET"]
-BRONZE_PREFIX = os.environ.get("BRONZE_LAYER_PREFIX", "bronzeLayer").strip().strip("/")
+BUCKET = os.environ.get("S3_BUCKET", DEFAULT_BUCKET).strip()
+BRONZE_STATS_PREFIX = os.environ.get(
+    "BRONZE_STATS_PREFIX", "bronzeLayer/youtube/raw_statistics"
+).strip().strip("/")
+BRONZE_REF_PREFIX = os.environ.get(
+    "BRONZE_REF_PREFIX", "bronzeLayer/youtube/raw_statistics_reference_data"
+).strip().strip("/")
 REGIONS = os.environ.get("YOUTUBE_REGIONS", "US,GB,CA,DE,FR,IN,JP,KR,MX,RU").split(",")
 SNS_TOPIC = os.environ.get("SNS_ALERT_TOPIC_ARN", "")
 API_BASE = "https://www.googleapis.com/youtube/v3"
@@ -28,10 +55,7 @@ MAX_RESULTS = 50
 
 
 def fetch_trending_videos(region_code: str) -> dict:
-    """
-    Call the YouTube Data API to get the current trending videos
-    for a given region.
-    """
+    """Call the YouTube Data API for trending videos in a region."""
     params = urlencode({
         "part": "snippet,statistics,contentDetails",
         "chart": "mostPopular",
@@ -47,10 +71,7 @@ def fetch_trending_videos(region_code: str) -> dict:
 
 
 def fetch_video_categories(region_code: str) -> dict:
-    """
-    Fetch the video category mapping for a region.
-    This replaces the static JSON reference files from Kaggle.
-    """
+    """Fetch the video category mapping for a region."""
     params = urlencode({
         "part": "snippet",
         "regionCode": region_code,
@@ -91,8 +112,8 @@ def send_alert(subject: str, message: str):
 
 def lambda_handler(event, context):
     """
-    Main handler. Iterates over regions, fetches trending videos
-    and category mappings, writes everything to Bronze layer.
+    Iterate over regions, fetch trending videos + categories,
+    write raw JSON into Bronze folders (single bucket).
     """
     now = datetime.now(timezone.utc)
     date_partition = now.strftime("%Y-%m-%d")
@@ -102,16 +123,16 @@ def lambda_handler(event, context):
     results = {"success": [], "failed": []}
 
     for region in REGIONS:
-        # Uppercase ISO codes: S3 paths match region=CA-style folders; API accepts uppercase.
-        region = region.strip().upper()
-        logger.info(f"Processing region: {region}")
+        # S3 partitions use lowercase (region=us); API needs uppercase (US)
+        region = region.strip().lower()
+        region_api = region.upper()
+        logger.info("Processing region: %s", region)
 
         # ── Fetch trending videos ────────────────────────────────────────
         try:
-            trending_data = fetch_trending_videos(region)
+            trending_data = fetch_trending_videos(region_api)
             video_count = len(trending_data.get("items", []))
 
-            # Add pipeline metadata to the raw response
             trending_data["_pipeline_metadata"] = {
                 "ingestion_id": ingestion_id,
                 "region": region,
@@ -120,28 +141,29 @@ def lambda_handler(event, context):
                 "source": "youtube_data_api_v3",
             }
 
-            # S3 key: s3://bucket/bronzeLayer/region=US/date=.../hour=.../<id>.json
+            # s3://youtube-analytics-data-ap-south-01/bronzeLayer/youtube/raw_statistics/...
             s3_key = (
-                f"{BRONZE_PREFIX}/region={region}/"
+                f"{BRONZE_STATS_PREFIX}/"
+                f"region={region}/"
                 f"date={date_partition}/"
                 f"hour={hour_partition}/"
                 f"{ingestion_id}.json"
             )
             write_to_s3(trending_data, BUCKET, s3_key)
-            logger.info(f"  Wrote {video_count} videos → s3://{BUCKET}/{s3_key}")
+            logger.info("  Wrote %s videos → s3://%s/%s", video_count, BUCKET, s3_key)
 
         except (HTTPError, URLError) as e:
-            logger.error(f"  API error for {region} trending: {e}")
+            logger.error("  API error for %s trending: %s", region, e)
             results["failed"].append({"region": region, "type": "trending", "error": str(e)})
             continue
         except Exception as e:
-            logger.error(f"  Unexpected error for {region} trending: {e}")
+            logger.error("  Unexpected error for %s trending: %s", region, e)
             results["failed"].append({"region": region, "type": "trending", "error": str(e)})
             continue
 
         # ── Fetch category reference data ────────────────────────────────
         try:
-            category_data = fetch_video_categories(region)
+            category_data = fetch_video_categories(region_api)
             category_data["_pipeline_metadata"] = {
                 "ingestion_id": ingestion_id,
                 "region": region,
@@ -149,22 +171,23 @@ def lambda_handler(event, context):
                 "source": "youtube_data_api_v3",
             }
 
+            # s3://youtube-analytics-data-ap-south-01/bronzeLayer/youtube/raw_statistics_reference_data/...
             ref_key = (
-                f"{BRONZE_PREFIX}/region={region}/"
+                f"{BRONZE_REF_PREFIX}/"
+                f"region={region}/"
                 f"date={date_partition}/"
                 f"{region}_category_id.json"
             )
             write_to_s3(category_data, BUCKET, ref_key)
-            logger.info(f"  Wrote categories → s3://{BUCKET}/{ref_key}")
+            logger.info("  Wrote categories → s3://%s/%s", BUCKET, ref_key)
 
         except (HTTPError, URLError) as e:
-            logger.error(f"  API error for {region} categories: {e}")
+            logger.error("  API error for %s categories: %s", region, e)
             results["failed"].append({"region": region, "type": "categories", "error": str(e)})
             continue
 
         results["success"].append(region)
 
-    # ── Summary & Alerting ───────────────────────────────────────────────
     summary = (
         f"Ingestion {ingestion_id} complete. "
         f"Success: {len(results['success'])}/{len(REGIONS)} regions. "
