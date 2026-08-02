@@ -1,0 +1,21 @@
+{
+  "Name": "yt-bronze-folder-crawler",
+  "Role": "GlueAccessS3",
+  "DatabaseName": "yt-pipeline-bronze-db",
+  "Targets": {
+    "S3Targets": [
+      {
+        "Path": "s3://youtube-analytics-data-ap-south-01/bronzeLayer/youtube/raw_statistics/",
+        "Exclusions": ["**/*.csv"]
+      }
+    ]
+  },
+  "SchemaChangePolicy": {
+    "UpdateBehavior": "UPDATE_IN_DATABASE",
+    "DeleteBehavior": "DELETE_FROM_DATABASE"
+  },
+  "RecrawlPolicy": {
+    "RecrawlBehavior": "CRAWL_EVERYTHING"
+  },
+  "Configuration": "{\"Version\":1.0,\"Grouping\":{\"TableGroupingPolicy\":\"CombineCompatibleSchemas\"},\"CrawlerOutput\":{\"Partitions\":{\"AddOrUpdateBehavior\":\"InheritFromTable\"},\"Tables\":{\"AddOrUpdateBehavior\":\"MergeNewColumns\"}},\"CreatePartitionIndex\":true}"
+}

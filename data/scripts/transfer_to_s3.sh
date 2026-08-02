@@ -1,39 +1,30 @@
- foreach ($file in @("CAvideos.csv", "CA_category_id.json")) {
->>     aws s3 cp $file s3://youtube-analytics-data-ap-south-01/bronzeLayer/region=ca/
->> }
+# Manual Kaggle → Bronze upload
+# Single bucket: youtube-analytics-data-ap-south-01
+#
+# CSVs use region/date/hour depth (same as API JSON) so Glue creates one table.
+#   s3://.../bronzeLayer/youtube/raw_statistics/region=xx/date=kaggle/hour=00/*videos.csv
+#   s3://.../bronzeLayer/youtube/raw_statistics_reference_data/region=xx/*_category_id.json
 
- foreach ($file in @("INvideos.csv", "IN_category_id.json")) {
->>     aws s3 cp $file s3://youtube-analytics-data-ap-south-01/bronzeLayer/region=in/
->> }
+BUCKET="${BUCKET:-youtube-analytics-data-ap-south-01}"
+STATS_PREFIX="bronzeLayer/youtube/raw_statistics"
+REF_PREFIX="bronzeLayer/youtube/raw_statistics_reference_data"
 
- foreach ($file in @("KRvideos.csv", "KR_category_id.json")) {
->>     aws s3 cp $file s3://youtube-analytics-data-ap-south-01/bronzeLayer/region=KR/
->> }
+REGIONS=(ca de fr gb in jp kr mx ru us)
 
-foreach ($file in @("MXvideos.csv", "MX_category_id.json")) {
->>     aws s3 cp $file s3://youtube-analytics-data-ap-south-01/bronzeLayer/region=MX/
->> }
+for region in "${REGIONS[@]}"; do
+  upper=$(echo "$region" | tr '[:lower:]' '[:upper:]')
+  csv="${upper}videos.csv"
+  json="${upper}_category_id.json"
 
- foreach ($file in @("USvideos.csv", "US_category_id.json")) {
->>     aws s3 cp $file s3://youtube-analytics-data-ap-south-01/bronzeLayer/region=US/
->> }
+  if [[ -f "$csv" ]]; then
+    aws s3 cp "$csv" "s3://${BUCKET}/${STATS_PREFIX}/region=${region}/date=kaggle/hour=00/"
+  else
+    echo "Skip missing: $csv"
+  fi
 
-foreach ($file in @("RUvideos.csv", "RU_category_id.json")) {
->>     aws s3 cp $file s3://youtube-analytics-data-ap-south-01/bronzeLayer/region=RU/
->> }
-
-foreach ($file in @("JPvideos.csv", "JP_category_id.json")) {
->>     aws s3 cp $file s3://youtube-analytics-data-ap-south-01/bronzeLayer/region=JP/
->> }
-
- foreach ($file in @("DEvideos.csv", "DE_category_id.json")) {
->>     aws s3 cp $file s3://youtube-analytics-data-ap-south-01/bronzeLayer/region=DE/
->> }
-
- foreach ($file in @("FRvideos.csv", "FR_category_id.json")) {
->>     aws s3 cp $file s3://youtube-analytics-data-ap-south-01/bronzeLayer/region=FR/
->> }
-
-foreach ($file in @("GBvideos.csv", "GB_category_id.json")) {
->>     aws s3 cp $file s3://youtube-analytics-data-ap-south-01/bronzeLayer/region=GB/
->> }
+  if [[ -f "$json" ]]; then
+    aws s3 cp "$json" "s3://${BUCKET}/${REF_PREFIX}/region=${region}/"
+  else
+    echo "Skip missing: $json"
+  fi
+done
